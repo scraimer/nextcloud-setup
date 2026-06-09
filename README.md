@@ -4,7 +4,10 @@ This project installs a self-hosted Nextcloud instance with Collabora Online for
 
 Persistent data is stored on the host at:
 
-- `$HOME/services/nextcloud/data`
+- `$HOME/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data`
+
+Docker named volumes (with `driver: local` / `type: none` bind mounts) are used so that
+files are stored at the above host path while Docker tracks the volume lifecycle.
 
 ## Prerequisites
 
@@ -86,7 +89,7 @@ docker compose logs -f
 Create a backup archive:
 
 ```bash
-tar -czf nextcloud-backup-$(date +%F).tar.gz "$HOME/services/nextcloud/data"
+tar -czf nextcloud-backup-$(date +%F).tar.gz "$HOME/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data"
 ```
 
 Restore from backup (example):
@@ -105,4 +108,4 @@ docker compose up -d
 ## Notes
 
 - Credentials are stored in `.env` (created by `install.sh`).
-- Keep `.env` and `$HOME/services/nextcloud/data` in your backup strategy.
+- Keep `.env` and `$HOME/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data` in your backup strategy.

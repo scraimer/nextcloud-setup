@@ -8,7 +8,7 @@
 #   NEXTCLOUD_PORT   Host port for Nextcloud  (default: 8080)
 #   COLLABORA_PORT   Host port for Collabora  (default: 9980)
 #
-# Data is persisted at $HOME/services/nextcloud/data, sub-divided as:
+# Data is persisted at $HOME/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data, sub-divided as:
 #   db/        – MariaDB files
 #   app/       – Nextcloud application files (config, apps, themes)
 #   userdata/  – User documents and files  ← primary backup target
@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="${HOME}/services/nextcloud/data"
+DATA_DIR="${HOME}/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

@@ -1,6 +1,8 @@
 # docker-compose.yml – Nextcloud + Collabora Online (WYSIWYG editing)
 #
-# All persistent data lives under DATA_DIR (default: $HOME/services/nextcloud/data).
+# All persistent data lives under DATA_DIR (set in .env).
+# Named volumes with driver_opts bind them to host paths so files are accessible
+# directly on the host while Docker still tracks the volume lifecycle.
 # Run ./install.sh to bootstrap; this file is managed by that script.
 
 version: "3.8"
@@ -21,7 +23,7 @@ services:
       MYSQL_USER: nextcloud
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
-      - ${DATA_DIR}/db:/var/lib/mysql
+      - db-data:/var/lib/mysql
     networks:
       - nextcloud-net
     healthcheck:
@@ -47,9 +49,9 @@ services:
       NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_TRUSTED_DOMAINS}
     volumes:
       # Application files: config, installed apps, themes
-      - ${DATA_DIR}/app:/var/www/html
+      - nc-app:/var/www/html
       # User data: documents, photos – the primary backup target
-      - ${DATA_DIR}/userdata:/var/www/html/data
+      - nc-userdata:/var/www/html/data
     depends_on:
       db:
         condition: service_healthy
@@ -82,3 +84,26 @@ services:
 networks:
   nextcloud-net:
     driver: bridge
+
+# Named volumes bound to host paths under DATA_DIR.
+# The host directories must exist before `docker compose up` (install.sh creates them).
+# Files appear as normal directories on the host at the device paths below.
+volumes:
+  db-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/db
+  nc-app:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/app
+  nc-userdata:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/userdata
