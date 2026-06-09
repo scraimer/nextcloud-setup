@@ -1,0 +1,84 @@
+# docker-compose.yml – Nextcloud + Collabora Online (WYSIWYG editing)
+#
+# All persistent data lives under DATA_DIR (default: $HOME/services/nextcloud/data).
+# Run ./install.sh to bootstrap; this file is managed by that script.
+
+version: "3.8"
+
+services:
+
+  # ── MariaDB ────────────────────────────────────────────────────────────────
+  db:
+    image: ${MARIADB_IMAGE:-mariadb:10.11}
+    restart: unless-stopped
+    command: >
+      --transaction-isolation=READ-COMMITTED
+      --log-bin=binlog
+      --binlog-format=ROW
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ${DATA_DIR}/db:/var/lib/mysql
+    networks:
+      - nextcloud-net
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ── Nextcloud ──────────────────────────────────────────────────────────────
+  nextcloud:
+    image: ${NEXTCLOUD_IMAGE:-nextcloud:30-apache}
+    restart: unless-stopped
+    ports:
+      - "${NEXTCLOUD_PORT:-8080}:80"
+    environment:
+      MYSQL_HOST: db
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_TRUSTED_DOMAINS}
+    volumes:
+      # Application files: config, installed apps, themes
+      - ${DATA_DIR}/app:/var/www/html
+      # User data: documents, photos – the primary backup target
+      - ${DATA_DIR}/userdata:/var/www/html/data
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - nextcloud-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ── Collabora Online (WYSIWYG document / spreadsheet / presentation editing) ──
+  collabora:
+    image: ${COLLABORA_IMAGE:-collabora/code:latest}
+    restart: unless-stopped
+    ports:
+      - "${COLLABORA_PORT:-9980}:9980"
+    environment:
+      # Regex matching the Nextcloud URL – Collabora only accepts WOPI requests
+      # from hosts that match this pattern (dots escaped for regex).
+      aliasgroup1: ${NEXTCLOUD_WOPI_DOMAIN}
+      # Disable internal TLS; terminate HTTPS at a reverse proxy when needed.
+      extra_params: --o:ssl.enable=false --o:ssl.termination=false
+      username: ${COLLABORA_ADMIN_USER:-admin}
+      password: ${COLLABORA_ADMIN_PASSWORD}
+    cap_add:
+      - MKNOD
+    networks:
+      - nextcloud-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  nextcloud-net:
+    driver: bridge
