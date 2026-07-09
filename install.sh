@@ -201,6 +201,26 @@ ${COMPOSE} exec --no-TTY --user www-data nextcloud \
 log "Flushing Nextcloud caches …"
 ${COMPOSE} exec --no-TTY --user www-data nextcloud php occ cache:flush 2>/dev/null || true
 
+# ── Fix file permissions (setgid for bind mounts) ──────────────────────────────
+log "Fixing bind mount permissions (setgid bit) …"
+log "  Setting group ownership and sticky bit on app/ …"
+chmod -R g+s,g+rwX "${DATA_DIR}/app" 2>/dev/null || true
+find "${DATA_DIR}/app" -type f -exec chmod g+rw {} \; 2>/dev/null || true
+
+log "  Setting group ownership and sticky bit on userdata/ …"
+chmod -R g+s,g+rwX "${DATA_DIR}/userdata" 2>/dev/null || true
+find "${DATA_DIR}/userdata" -type f -exec chmod g+rw {} \; 2>/dev/null || true
+
+# ── Setup automatic permission fix after reboot ──────────────────────────────────
+log "Setting up automatic permission fix after reboot …"
+CRON_ENTRY="@reboot sleep 10 && ${SCRIPT_DIR}/fix-permissions.sh"
+if ! crontab -l 2>/dev/null | grep -q "fix-permissions.sh"; then
+    (crontab -l 2>/dev/null; echo "${CRON_ENTRY}") | crontab -
+    log "✓ Crontab entry added: permissions will be fixed automatically after reboot"
+else
+    log "✓ Crontab entry already exists"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 sep
@@ -218,5 +238,6 @@ printf '  \e[2mTo stop :\e[0m  %s\n'   "${COMPOSE} -f '${SCRIPT_DIR}/docker-comp
 printf '  \e[2mTo start:\e[0m  %s\n'   "${COMPOSE} -f '${SCRIPT_DIR}/docker-compose.yml' up -d"
 printf '  \e[2mBackup  :\e[0m  %s\n'   "tar -czf nextcloud-backup-\$(date +%F).tar.gz '${DATA_DIR}'"
 echo ""
+printf '  \e[2mTo fix permissions after reboot:\e[0m  %s\n' "'${SCRIPT_DIR}/fix-permissions.sh'"
 printf '  \e[2mCredentials are stored in: %s\e[0m\n' "${ENV_FILE}"
 sep
