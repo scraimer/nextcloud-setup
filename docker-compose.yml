@@ -89,12 +89,15 @@ networks:
 # The host directories must exist before `docker compose up` (install.sh creates them).
 # Files appear as normal directories on the host at the device paths below.
 volumes:
+  # NOTE: db-data intentionally lives OUTSIDE DATA_DIR (DB_DATA_DIR, not DATA_DIR).
+  # DATA_DIR is synced by Dropbox; syncing live MariaDB files mid-write corrupts
+  # them (see scripts/repair-db.sh). Backups go through scripts/backup-db.sh instead.
   db-data:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${DATA_DIR}/db
+      device: ${DB_DATA_DIR}
   nc-app:
     driver: local
     driver_opts:

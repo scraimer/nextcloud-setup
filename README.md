@@ -141,8 +141,89 @@ crontab -e
 
 This waits 10 seconds for the system to settle and Docker to start containers, then fixes permissions.
 
+## Database Storage & Reliability
+
+MariaDB's live data directory is **not** stored under the Dropbox-synced
+`data/` folder. Dropbox syncing files while MariaDB has them open for writing
+(`ibdata1`, `ib_logfile0`, `aria_log`, `binlog`) corrupts them and causes a
+crash loop after every reboot ("Aria recovery failed"). Instead:
+
+- Live DB files live at `DB_DATA_DIR` (set in `.env`, default
+  `/var/lib/nextcloud-db`) — a local-only path never synced by Dropbox.
+- A daily `mysqldump` snapshot is written to `data/backups/db/` instead —
+  safe to sync because it's a single, complete, closed file.
+
+`install.sh` sets this up automatically, including two systemd units:
+
+- `nextcloud-db-repair.service` — runs `repair-db.sh` once at every boot as
+  a safety net; detects and self-heals the Aria crash loop if it recurs.
+- `nextcloud-db-backup.timer` — runs `backup-db.sh` once a day.
+
+### `repair-db.sh`
+
+Detects the MariaDB "Aria recovery failed" crash loop and repairs it
+in-place (clears the corrupted Aria log via a throwaway container, restarts
+the `db` service). Safe to run any time — it's a no-op if the database is
+already healthy.
+
+```bash
+./repair-db.sh
+```
+
+Check the boot-time safety net:
+
+```bash
+systemctl status nextcloud-db-repair.service
+```
+
+### `migrate-db-storage.sh`
+
+One-time migration that moves MariaDB's live data out of the Dropbox-synced
+`data/db` path into `DB_DATA_DIR`, and repoints the Docker volume. Already
+run once for this install; kept for reference/other machines. Idempotent —
+it's a no-op if the volume already points at `DB_DATA_DIR`.
+
+```bash
+./migrate-db-storage.sh
+```
+
+### `backup-db.sh`
+
+Produces a daily `mysqldump` (gzip-compressed) into `data/backups/db/`, and
+prunes dumps older than `DB_BACKUP_RETENTION_DAYS` (default: 14 days, set in
+`.env`).
+
+```bash
+./backup-db.sh
+```
+
+Check the daily timer:
+
+```bash
+systemctl list-timers nextcloud-db-backup.timer
+```
+
+## Rescanning Files
+
+If a file exists on disk under `data/userdata/<user>/files/` but doesn't show
+up in the Nextcloud web UI (e.g. after restoring from a backup, manually
+copying files in, or repairing the database), Nextcloud's file index needs to
+be refreshed:
+
+```bash
+./rescan-files.sh              # rescan all users
+./rescan-files.sh shalom       # rescan just user "shalom"
+./rescan-files.sh alice bob    # rescan multiple specific users
+```
+
 ## Notes
 
 - Credentials are stored in `.env` (created by `install.sh`).
-- Keep `.env` and `$HOME/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data` in your backup strategy.
+- Keep `.env`, `$HOME/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data`,
+  and `DB_DATA_DIR` (default `/var/lib/nextcloud-db`) in your backup strategy.
+  `DB_DATA_DIR` itself is excluded from Dropbox on purpose (see "Database
+  Storage & Reliability" above) — its content is backed up daily instead via
+  `backup-db.sh` into `data/backups/db/`, which *is* synced by Dropbox.
 - Use `fix-permissions.sh` if permission issues arise after restarts or reboots.
+- Use `repair-db.sh` if MariaDB crash-loops after a reboot.
+- Use `rescan-files.sh` if files on disk aren't showing up in the Nextcloud UI.

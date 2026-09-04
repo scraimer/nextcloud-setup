@@ -9,15 +9,20 @@
 #   COLLABORA_PORT   Host port for Collabora  (default: 9980)
 #
 # Data is persisted at $HOME/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data, sub-divided as:
-#   db/        – MariaDB files
 #   app/       – Nextcloud application files (config, apps, themes)
 #   userdata/  – User documents and files  ← primary backup target
+#   backups/db/ – Daily MariaDB dumps (see backup-db.sh)
+#
+# MariaDB's live data directory is stored OUTSIDE of DATA_DIR (see DB_DATA_DIR
+# below), because Dropbox syncing live database files mid-write corrupts them.
 
 set -euo pipefail
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${HOME}/Dropbox/backups/used-for-recovery/linux/services/nextcloud/data"
+# MUST be outside any Dropbox/cloud-sync path -- see the note in .env.
+DB_DATA_DIR="${DB_DATA_DIR:-/var/lib/nextcloud-db}"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -60,7 +65,16 @@ COLLABORA_PORT="${COLLABORA_PORT:-9980}"
 
 # ── Create data directories ────────────────────────────────────────────────────
 log "Creating data directories under: ${DATA_DIR}"
-mkdir -p "${DATA_DIR}/db" "${DATA_DIR}/app" "${DATA_DIR}/userdata"
+mkdir -p "${DATA_DIR}/app" "${DATA_DIR}/userdata" "${DATA_DIR}/backups/db"
+
+# DB_DATA_DIR (e.g. /var/lib/nextcloud-db) is typically outside the caller's
+# home directory and not writable by this user. Create it via a throwaway
+# container instead of `mkdir`/`sudo` -- Docker's bind-mount logic creates
+# the host path as root (owned by the daemon) with no privilege prompt.
+if [[ ! -d "${DB_DATA_DIR}" ]]; then
+    log "Creating database data directory: ${DB_DATA_DIR} (via Docker, no sudo needed)"
+    docker run --rm -v "${DB_DATA_DIR}:/data" alpine true
+fi
 
 # ── Generate .env ──────────────────────────────────────────────────────────────
 if [[ -f "${ENV_FILE}" ]]; then
@@ -68,6 +82,20 @@ if [[ -f "${ENV_FILE}" ]]; then
     # Read existing admin credentials for the summary at the end
     NC_ADMIN_USER=$(grep -E '^NEXTCLOUD_ADMIN_USER=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')
     NC_ADMIN_PASS=$(grep -E '^NEXTCLOUD_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')
+
+    # Backfill DB_DATA_DIR into pre-existing .env files that predate it.
+    if ! grep -qE '^DB_DATA_DIR=' "${ENV_FILE}"; then
+        log "Adding DB_DATA_DIR=${DB_DATA_DIR} to existing .env …"
+        cat >> "${ENV_FILE}" <<EOF
+
+# ── Database data directory ───────────────────────────────────────────────────
+# MUST be OUTSIDE any Dropbox/cloud-sync path. Dropbox syncing live MariaDB
+# files (ibdata1, ib_logfile0, aria_log, binlog) mid-write corrupts them and
+# causes crash loops on every reboot. Backups of the DB are instead produced
+# by backup-db.sh as a clean mysqldump written into DATA_DIR.
+DB_DATA_DIR=${DB_DATA_DIR}
+EOF
+    fi
 else
     log "Generating ${ENV_FILE} with random credentials …"
 
@@ -92,6 +120,13 @@ COLLABORA_IMAGE=collabora/code:latest
 
 # ── Data directory ────────────────────────────────────────────────────────────
 DATA_DIR=${DATA_DIR}
+
+# ── Database data directory ───────────────────────────────────────────────────
+# MUST be OUTSIDE any Dropbox/cloud-sync path. Dropbox syncing live MariaDB
+# files (ibdata1, ib_logfile0, aria_log, binlog) mid-write corrupts them and
+# causes crash loops on every reboot. Backups of the DB are instead produced
+# by backup-db.sh as a clean mysqldump written into DATA_DIR.
+DB_DATA_DIR=${DB_DATA_DIR}
 
 # ── Host ports ────────────────────────────────────────────────────────────────
 NEXTCLOUD_PORT=${NEXTCLOUD_PORT}
@@ -221,6 +256,72 @@ else
     log "✓ Crontab entry already exists"
 fi
 
+# ── Install systemd units: DB repair-at-boot + daily DB backup ───────────────
+# repair-db.sh fixes the MariaDB "Aria recovery failed" crash loop that can
+# occur after an unclean shutdown/reboot. backup-db.sh takes a daily
+# mysqldump into DATA_DIR/backups/db (safe to sync via Dropbox, unlike the
+# live DB files in DB_DATA_DIR). Both need root to install (writes under
+# /etc/systemd/system), so this step will prompt for your sudo password.
+CURRENT_USER="$(id -un)"
+
+if ! command -v systemctl &>/dev/null; then
+    warn "systemctl not found (no systemd on this host) – skipping automatic DB"
+    warn "repair/backup unit installation. Run these manually as needed:"
+    warn "  ${SCRIPT_DIR}/repair-db.sh   (after every reboot)"
+    warn "  ${SCRIPT_DIR}/backup-db.sh   (daily)"
+elif ! sudo -v 2>/dev/null; then
+    warn "Could not obtain sudo – skipping automatic DB repair/backup unit installation."
+    warn "Re-run install.sh with sudo access, or install these systemd units manually"
+    warn "(see the commented instructions at the bottom of repair-db.sh / backup-db.sh)."
+else
+    log "Installing nextcloud-db-repair.service (runs repair-db.sh once per boot) …"
+    sudo tee /etc/systemd/system/nextcloud-db-repair.service >/dev/null <<EOF
+[Unit]
+Description=Repair Nextcloud MariaDB after unclean shutdown
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_DIR}/repair-db.sh
+User=${CURRENT_USER}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    log "Installing nextcloud-db-backup.service + .timer (runs backup-db.sh daily) …"
+    sudo tee /etc/systemd/system/nextcloud-db-backup.service >/dev/null <<EOF
+[Unit]
+Description=Backup Nextcloud MariaDB to Dropbox
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_DIR}/backup-db.sh
+User=${CURRENT_USER}
+EOF
+
+    sudo tee /etc/systemd/system/nextcloud-db-backup.timer >/dev/null <<EOF
+[Unit]
+Description=Run Nextcloud DB backup daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now nextcloud-db-repair.service
+    sudo systemctl enable --now nextcloud-db-backup.timer
+    log "✓ nextcloud-db-repair.service enabled (runs at every boot)"
+    log "✓ nextcloud-db-backup.timer enabled (runs backup-db.sh daily)"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 sep
@@ -233,11 +334,14 @@ printf '  %-22s \e[36m%s\e[0m\n'  "Collabora admin UI:" \
     "http://${HOST_IP}:${COLLABORA_PORT}/browser/dist/admin/admin.html"
 echo ""
 printf '  %-22s %s\n'  "Persistent data:" "${DATA_DIR}"
+printf '  %-22s %s\n'  "DB data (local):" "${DB_DATA_DIR}"
 echo ""
 printf '  \e[2mTo stop :\e[0m  %s\n'   "${COMPOSE} -f '${SCRIPT_DIR}/docker-compose.yml' down"
 printf '  \e[2mTo start:\e[0m  %s\n'   "${COMPOSE} -f '${SCRIPT_DIR}/docker-compose.yml' up -d"
 printf '  \e[2mBackup  :\e[0m  %s\n'   "tar -czf nextcloud-backup-\$(date +%F).tar.gz '${DATA_DIR}'"
 echo ""
 printf '  \e[2mTo fix permissions after reboot:\e[0m  %s\n' "'${SCRIPT_DIR}/fix-permissions.sh'"
+printf '  \e[2mDB self-repair after reboot   :\e[0m  %s\n' "nextcloud-db-repair.service (systemd, auto)"
+printf '  \e[2mDB daily backup                :\e[0m  %s\n' "nextcloud-db-backup.timer (systemd, auto)"
 printf '  \e[2mCredentials are stored in: %s\e[0m\n' "${ENV_FILE}"
 sep
