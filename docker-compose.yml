@@ -5,8 +5,6 @@
 # directly on the host while Docker still tracks the volume lifecycle.
 # Run ./install.sh to bootstrap; this file is managed by that script.
 
-version: "3.8"
-
 services:
 
   # ── MariaDB ────────────────────────────────────────────────────────────────
@@ -35,7 +33,7 @@ services:
 
   # ── Nextcloud ──────────────────────────────────────────────────────────────
   nextcloud:
-    image: ${NEXTCLOUD_IMAGE:-nextcloud:30-apache}
+    image: ${NEXTCLOUD_IMAGE:-nextcloud:30.0.17-apache} # change to ":30-apache" to update
     restart: unless-stopped
     ports:
       - "${NEXTCLOUD_PORT:-8080}:80"
@@ -62,7 +60,7 @@ services:
 
   # ── Collabora Online (WYSIWYG document / spreadsheet / presentation editing) ──
   collabora:
-    image: ${COLLABORA_IMAGE:-collabora/code:latest}
+    image: ${COLLABORA_IMAGE:-collabora/code:26.04.3.2.1} # change to ":latest" to update
     restart: unless-stopped
     ports:
       - "${COLLABORA_PORT:-9980}:9980"
