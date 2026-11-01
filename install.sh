@@ -164,20 +164,45 @@ cd "${SCRIPT_DIR}"
 log "Pulling Docker images …"
 ${COMPOSE} pull
 
+log "Checking Nextcloud PHP version (minimum 8.2) …"
+if ! NEXTCLOUD_PHP_INFO=$(${COMPOSE} run --rm --no-deps --entrypoint php nextcloud \
+        -r 'echo PHP_VERSION_ID, " ", PHP_VERSION;'); then
+    die "Could not determine the PHP version in the Nextcloud Docker image."
+fi
+read -r NEXTCLOUD_PHP_VERSION_ID NEXTCLOUD_PHP_VERSION <<< "${NEXTCLOUD_PHP_INFO}"
+if [[ ! "${NEXTCLOUD_PHP_VERSION_ID:-}" =~ ^[0-9]+$ || -z "${NEXTCLOUD_PHP_VERSION:-}" ]]; then
+    die "Could not parse the PHP version reported by the Nextcloud Docker image: ${NEXTCLOUD_PHP_INFO}"
+fi
+if (( NEXTCLOUD_PHP_VERSION_ID < 80200 )); then
+    die "The Nextcloud Docker image uses PHP ${NEXTCLOUD_PHP_VERSION}; PHP 8.2 or newer is required. Update NEXTCLOUD_IMAGE in ${ENV_FILE}."
+fi
+log "Nextcloud Docker image uses PHP ${NEXTCLOUD_PHP_VERSION}."
+
 log "Starting services …"
 ${COMPOSE} up -d
+
+# Nextcloud requires occ to run as the owner of config.php, which may be the
+# host user rather than www-data when the application directory is bind-mounted.
+run_occ() {
+    local occ_uid
+    occ_uid=$(${COMPOSE} exec --no-TTY nextcloud \
+        stat -c '%u' /var/www/html/config/config.php 2>/dev/null || echo "")
+    if [[ -z "${occ_uid}" ]]; then
+        occ_uid="www-data"
+    fi
+    ${COMPOSE} exec --no-TTY --user "${occ_uid}" nextcloud php occ "$@"
+}
 
 # ── Wait for Nextcloud first-run setup to complete ────────────────────────────
 log "Waiting for Nextcloud to complete initial installation (≈1–3 min) …"
 WAITED=0
 MAX_WAIT=360  # 6 minutes
 
-until ${COMPOSE} exec --no-TTY --user www-data nextcloud \
-        php occ status --output=json 2>/dev/null | grep -q '"installed":true'; do
+until run_occ status --output=json 2>/dev/null | grep -q '"installed":true'; do
     WAITED=$((WAITED + 5))
     if [[ ${WAITED} -gt ${MAX_WAIT} ]]; then
         die "Nextcloud did not finish setup within ${MAX_WAIT}s.
-  Check container logs:  ${COMPOSE} logs -f nextcloud"
+  Check container logs:  ${COMPOSE} logs -f nextcloud -n 100"
     fi
     printf '.'
     sleep 5
@@ -190,13 +215,11 @@ log "Installing Nextcloud Office app (richdocuments) …"
 
 # app:install is a no-op (exits non-zero) if the app is already present;
 # we then fall back to app:enable in case it was installed but disabled.
-if ! ${COMPOSE} exec --no-TTY --user www-data nextcloud \
-        php occ app:install richdocuments 2>/dev/null; then
+if ! run_occ app:install richdocuments 2>/dev/null; then
     warn "app:install returned non-zero (app may already be installed). Enabling instead …"
 fi
 
-if ! ${COMPOSE} exec --no-TTY --user www-data nextcloud \
-        php occ app:enable richdocuments 2>/dev/null; then
+if ! run_occ app:enable richdocuments 2>/dev/null; then
     warn "Could not enable richdocuments. You may need to install it manually via
   Nextcloud → Apps → Office & Text → Nextcloud Office."
 fi
@@ -205,8 +228,7 @@ fi
 COLLAB_URL="http://${HOST_IP}:${COLLABORA_PORT}"
 log "Setting Collabora server URL → ${COLLAB_URL}"
 
-${COMPOSE} exec --no-TTY --user www-data nextcloud \
-    php occ config:app:set richdocuments wopi_url --value="${COLLAB_URL}"
+run_occ config:app:set richdocuments wopi_url --value="${COLLAB_URL}"
 
 # ── Derive the Docker network subnet for the WOPI allow-list ─────────────────
 # Collabora contacts Nextcloud via WOPI; Nextcloud must trust that source IP.
@@ -229,12 +251,11 @@ if [[ -z "${DOCKER_SUBNET}" ]]; then
 fi
 
 log "Setting WOPI allowlist → ${DOCKER_SUBNET}"
-${COMPOSE} exec --no-TTY --user www-data nextcloud \
-    php occ config:app:set richdocuments wopi_allowlist --value="${DOCKER_SUBNET}"
+run_occ config:app:set richdocuments wopi_allowlist --value="${DOCKER_SUBNET}"
 
 # ── Final cache flush ─────────────────────────────────────────────────────────
 log "Flushing Nextcloud caches …"
-${COMPOSE} exec --no-TTY --user www-data nextcloud php occ cache:flush 2>/dev/null || true
+run_occ cache:flush 2>/dev/null || true
 
 # ── Fix file permissions (setgid for bind mounts) ──────────────────────────────
 log "Fixing bind mount permissions (setgid bit) …"
