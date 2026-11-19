@@ -140,6 +140,10 @@ NEXTCLOUD_ADMIN_PASSWORD=${NC_ADMIN_PASS}
 # Add your server's domain name here if you later put it behind a reverse proxy.
 NEXTCLOUD_TRUSTED_DOMAINS="${HOST_IP} localhost"
 
+# Public access must use an HTTPS reverse proxy. Set to http only for a
+# direct HTTP-only installation; login redirects will then use HTTP.
+OVERWRITEPROTOCOL=https
+
 # ── Database credentials ──────────────────────────────────────────────────────
 MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASS}
 MYSQL_PASSWORD=${MYSQL_PASS}
@@ -347,7 +351,8 @@ fi
 echo ""
 sep
 printf '  \e[1mNextcloud is ready!\e[0m\n\n'
-printf '  %-22s \e[36m%s\e[0m\n'  "Nextcloud URL:"   "http://${HOST_IP}:${NEXTCLOUD_PORT}"
+printf '  %-22s %s\n'             "Nextcloud URL:"   "Use your HTTPS reverse proxy URL (see README.md)"
+printf '  %-22s \e[36m%s\e[0m\n'  "HTTP backend:"    "http://${HOST_IP}:${NEXTCLOUD_PORT}"
 printf '  %-22s %s\n'             "Admin username:"  "${NC_ADMIN_USER:-admin}"
 printf '  %-22s %s\n'             "Admin password:"  "${NC_ADMIN_PASS:-(see ${ENV_FILE})}"
 echo ""

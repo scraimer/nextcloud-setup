@@ -45,10 +45,18 @@ The script will:
 
 ## Open the Services
 
-After installation, open:
+Nextcloud is configured to generate HTTPS URLs. Place an HTTPS reverse proxy
+in front of its HTTP backend, add the public hostname to
+`NEXTCLOUD_TRUSTED_DOMAINS` in `.env`, and open the proxy's HTTPS URL.
+The backend at `http://<YOUR_HOST_IP>:8080` is not a usable direct login URL
+with this configuration. Collabora's admin UI is at:
 
-- Nextcloud: `http://<YOUR_HOST_IP>:8080`
 - Collabora admin UI: `http://<YOUR_HOST_IP>:9980/browser/dist/admin/admin.html`
+
+For an HTTP-only installation without an HTTPS proxy, set
+`OVERWRITEPROTOCOL=http` in `.env` and recreate the Nextcloud container with
+`docker compose up -d nextcloud`. Do not use this setting for an HTTPS proxy:
+login redirects may be blocked by the browser.
 
 The script prints the detected host IP and generated admin credentials when it finishes.
 
